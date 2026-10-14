@@ -1,34 +1,33 @@
-const cacheName = "UnityEMEA-Tampere_CityDigitalTwin-0.1.0";
-const contentToCache = [
-    "Build/Web_6.3.loader.js",
-    "Build/Web_6.3.framework.js.unityweb",
-    "Build/Web_6.3.worker.js.unityweb",
-    "Build/Web_6.3.data.unityweb",
-    "Build/Web_6.3.wasm.unityweb",
-    "TemplateData/style.css"
+// Cross-origin isolation shim for static hosts (GitHub Pages) that cannot send headers.
+// The multithreaded Unity build needs SharedArrayBuffer, which browsers only enable when the
+// page is served with COOP: same-origin + COEP. This worker adds those headers to same-origin
+// responses. Cross-origin requests (Cesium / tile servers) pass through untouched.
+// It replaces Unity's default caching worker, which also kept stale builds forever.
 
-];
+const coep = new URL(self.location).searchParams.get("coep") || "credentialless";
 
-self.addEventListener('install', function (e) {
-    console.log('[Service Worker] Install');
-    
-    e.waitUntil((async function () {
-      const cache = await caches.open(cacheName);
-      console.log('[Service Worker] Caching all: app shell and content');
-      await cache.addAll(contentToCache);
-    })());
+self.addEventListener("install", () => self.skipWaiting());
+
+self.addEventListener("activate", (e) => {
+  e.waitUntil((async () => {
+    // Drop caches left by the old Unity caching worker.
+    for (const key of await caches.keys()) await caches.delete(key);
+    await self.clients.claim();
+  })());
 });
 
-self.addEventListener('fetch', function (e) {
-    e.respondWith((async function () {
-      let response = await caches.match(e.request);
-      console.log(`[Service Worker] Fetching resource: ${e.request.url}`);
-      if (response) { return response; }
+self.addEventListener("fetch", (e) => {
+  const req = e.request;
+  if (new URL(req.url).origin !== self.location.origin) return;
+  if (req.cache === "only-if-cached" && req.mode !== "same-origin") return;
 
-      response = await fetch(e.request);
-      const cache = await caches.open(cacheName);
-      console.log(`[Service Worker] Caching new resource: ${e.request.url}`);
-      cache.put(e.request, response.clone());
-      return response;
-    })());
+  e.respondWith((async () => {
+    const res = await fetch(req);
+    if (res.status === 0) return res;
+    const headers = new Headers(res.headers);
+    headers.set("Cross-Origin-Embedder-Policy", coep);
+    headers.set("Cross-Origin-Opener-Policy", "same-origin");
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  })());
 });
